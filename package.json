@@ -1,0 +1,45 @@
+{
+  "name": "pi-fusion",
+  "version": "0.1.0",
+  "description": "Pi-native architect and builder model fusion using pi-subagents",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-subagents",
+    "model-fusion"
+  ],
+  "license": "MIT",
+  "homepage": "https://github.com/majesticlabs-dev/pi-fusion#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/majesticlabs-dev/pi-fusion.git"
+  },
+  "bugs": {
+    "url": "https://github.com/majesticlabs-dev/pi-fusion/issues"
+  },
+  "files": [
+    "agents",
+    "extensions",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/pi-fusion.ts"
+    ],
+    "subagents": {
+      "agents": [
+        "./agents"
+      ]
+    }
+  }
+}
