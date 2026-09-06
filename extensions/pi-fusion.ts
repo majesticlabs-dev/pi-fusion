@@ -50,10 +50,8 @@ function splitModel(spec: string): [provider: string, model: string] {
 }
 
 function validateModels(config: FusionConfig, ctx: CommandContext): void {
-  for (const [role, spec] of [
-    ["architect", config.architectModel],
-    ["builder", config.builderModel],
-  ] as const) {
+  for (const role of ["architect", "analyst", "builder"] as const) {
+    const spec = config[role].model;
     const [provider, modelId] = splitModel(spec);
     const model = ctx.modelRegistry.find(provider, modelId);
     if (!model) throw new Error(`${role} model '${spec}' is not registered. Check it with pi --list-models.`);
@@ -93,7 +91,7 @@ async function spawnWorkflow(
   const result = await requestSubagentRpc<RpcSpawnResult>(
     pi.events,
     "spawn",
-    { ...workflow, cwd: ctx.cwd, async: true, clarify: false },
+    { ...workflow, cwd: ctx.cwd, async: true },
   );
   const runId = result.details?.asyncId ?? result.details?.runId;
   ctx.ui.notify(
@@ -104,13 +102,14 @@ async function spawnWorkflow(
 
 export default function registerPiFusion(pi: ExtensionApi): void {
   pi.registerCommand("fusion-config", {
-    description: "Show the resolved pi-fusion architect and builder models",
+    description: "Show the resolved pi-fusion agent models and efforts",
     handler: async (_args, ctx) => runCommand(ctx, "fusion-config", async () => {
       const { config, projectPath } = await resolveConfig(ctx);
       ctx.ui.notify(
         [
-          `ARCHITECT ${config.architectModel}`,
-          `BUILDER ${config.builderModel}`,
+          `ARCHITECT ${config.architect.model}:${config.architect.effort}`,
+          `ANALYST ${config.analyst.model}:${config.analyst.effort}`,
+          `BUILDER ${config.builder.model}:${config.builder.effort}`,
           `user: ${USER_CONFIG_PATH}`,
           `project override: ${projectPath}`,
         ].join("\n"),
@@ -120,7 +119,7 @@ export default function registerPiFusion(pi: ExtensionApi): void {
   });
 
   pi.registerCommand("opinion", {
-    description: "Run architect and builder models independently through read-only analysts",
+    description: "Run independent read-only architect and analyst opinions",
     handler: async (args, ctx) => runCommand(ctx, "opinion", async () => {
       const task = args.trim();
       if (!task) {
@@ -133,7 +132,7 @@ export default function registerPiFusion(pi: ExtensionApi): void {
   });
 
   pi.registerCommand("fusion", {
-    description: "Fuse independent architect and builder analyses: /fusion <request> [:: merge instruction]",
+    description: "Fuse independent architect and analyst analyses: /fusion <request> [:: merge instruction]",
     handler: async (args, ctx) => runCommand(ctx, "fusion", async () => {
       const { task, instruction } = parseFusionInput(args);
       const { config } = await resolveConfig(ctx);
@@ -142,7 +141,7 @@ export default function registerPiFusion(pi: ExtensionApi): void {
   });
 
   pi.registerCommand("fusion-build", {
-    description: "Architect plan, single-writer builder implementation, then read-only architect review",
+    description: "Architect plan, single-writer builder implementation, then read-only analyst review",
     handler: async (args, ctx) => runCommand(ctx, "fusion-build", async () => {
       const task = args.trim();
       if (!task) {

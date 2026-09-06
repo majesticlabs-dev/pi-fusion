@@ -1,7 +1,7 @@
 {
   "name": "pi-fusion",
   "version": "0.1.0",
-  "description": "Pi-native architect and builder model fusion using pi-subagents",
+  "description": "Pi-native architect, analyst, and builder workflows using pi-subagents",
   "type": "module",
   "keywords": [
     "pi-package",
