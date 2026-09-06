@@ -1,4 +1,4 @@
-import type { FusionConfig } from "./config.ts";
+import type { FusionAgentConfig, FusionConfig } from "./config.ts";
 
 export type WorkflowConfig = FusionConfig;
 
@@ -8,42 +8,12 @@ export const AGENTS = Object.freeze({
   builder: "pi-fusion.builder",
 });
 
-interface ParallelTask {
-  agent: string;
-  task: string;
-  model: string;
-  label?: string;
-  as?: string;
-  output: false;
-}
-
-interface ChainStep {
-  agent?: string;
-  task?: string;
-  model?: string;
-  label?: string;
-  as?: string;
-  output?: false;
-  acceptance?: "checked";
+export interface WorkflowRequest {
+  workflowScript: string;
+  context: "fresh";
+  async: true;
+  artifacts: true;
   agentContract?: { version: 1 };
-  parallel?: ParallelTask[];
-  concurrency?: number;
-}
-
-export interface OpinionWorkflow {
-  tasks: ParallelTask[];
-  concurrency: number;
-  context: "fresh";
-  async: true;
-  artifacts: true;
-}
-
-export interface ChainWorkflow {
-  chain: ChainStep[];
-  context: "fresh";
-  async: true;
-  artifacts: true;
-  agentContract: { version: 1 };
 }
 
 const DEFAULT_FUSION_INSTRUCTION = "Critically merge both analyses into one definitive answer.";
@@ -58,9 +28,9 @@ export function parseFusionInput(input: string): { task: string; instruction: st
   return { task, instruction };
 }
 
-function analysisTask(role: "ARCHITECT" | "BUILDER", task: string): string {
+function analysisTask(role: "ARCHITECT" | "ANALYST", task: string): string {
   return [
-    `You are the ${role} perspective in a two-model fusion workflow.`,
+    `You are the ${role} in a two-agent fusion workflow.`,
     "Analyze independently. Inspect the project when relevant, but do not modify files.",
     "Return a decisive, evidence-grounded answer for a later synthesis step.",
     "",
@@ -69,149 +39,152 @@ function analysisTask(role: "ARCHITECT" | "BUILDER", task: string): string {
   ].join("\n");
 }
 
-export function buildOpinionWorkflow(config: WorkflowConfig, task: string): OpinionWorkflow {
+function modelSelector(config: FusionAgentConfig): string {
+  return `${config.model}:${config.effort}`;
+}
+
+function workflowRequest(workflowScript: string, agentContract = false): WorkflowRequest {
   return {
-    tasks: [
-      {
-        agent: AGENTS.analyst,
-        label: "Architect opinion",
-        task: analysisTask("ARCHITECT", task),
-        model: config.architectModel,
-        output: false,
-      },
-      {
-        agent: AGENTS.analyst,
-        label: "Builder opinion",
-        task: analysisTask("BUILDER", task),
-        model: config.builderModel,
-        output: false,
-      },
-    ],
-    concurrency: 2,
+    workflowScript,
     context: "fresh",
     async: true,
     artifacts: true,
+    ...(agentContract ? { agentContract: { version: 1 as const } } : {}),
   };
+}
+
+export function buildOpinionWorkflow(config: WorkflowConfig, task: string): WorkflowRequest {
+  const children = [
+    {
+      key: "architect",
+      agent: AGENTS.architect,
+      label: "Architect opinion",
+      task: analysisTask("ARCHITECT", task),
+      model: modelSelector(config.architect),
+      output: false,
+    },
+    {
+      key: "analyst",
+      agent: AGENTS.analyst,
+      label: "Analyst opinion",
+      task: analysisTask("ANALYST", task),
+      model: modelSelector(config.analyst),
+      output: false,
+    },
+  ];
+
+  return workflowRequest([
+    `const results = await runs.all(${JSON.stringify(children)});`,
+    "return results.map((result) => result.output);",
+  ].join("\n"));
 }
 
 export function buildFusionWorkflow(
   config: WorkflowConfig,
   task: string,
   instruction = DEFAULT_FUSION_INSTRUCTION,
-): ChainWorkflow {
-  return {
-    chain: [
-      {
-        parallel: [
-          {
-            agent: AGENTS.analyst,
-            label: "Architect analysis",
-            as: "architect",
-            task: analysisTask("ARCHITECT", task),
-            model: config.architectModel,
-            output: false,
-          },
-          {
-            agent: AGENTS.analyst,
-            label: "Builder analysis",
-            as: "builder",
-            task: analysisTask("BUILDER", task),
-            model: config.builderModel,
-            output: false,
-          },
-        ],
-        concurrency: 2,
-      },
-      {
-        agent: AGENTS.architect,
-        label: "Fuse analyses",
-        model: config.architectModel,
-        output: false,
-        task: [
-          "Synthesize the independent analyses below into one definitive answer.",
-          `Fusion instruction: ${instruction}`,
-          "Discard unsupported claims instead of averaging them. Preserve useful divergence with attribution.",
-          "End with a concise 'Consensus and Divergence' section.",
-          "",
-          `Original request: ${task}`,
-          "",
-          "ARCHITECT ANALYSIS",
-          "{outputs.architect}",
-          "",
-          "BUILDER ANALYSIS",
-          "{outputs.builder}",
-        ].join("\n"),
-      },
-    ],
-    context: "fresh",
-    async: true,
-    artifacts: true,
-    agentContract: { version: 1 },
-  };
+): WorkflowRequest {
+  const analyses = [
+    {
+      key: "architect",
+      agent: AGENTS.architect,
+      label: "Architect analysis",
+      task: analysisTask("ARCHITECT", task),
+      model: modelSelector(config.architect),
+      output: false,
+    },
+    {
+      key: "analyst",
+      agent: AGENTS.analyst,
+      label: "Analyst analysis",
+      task: analysisTask("ANALYST", task),
+      model: modelSelector(config.analyst),
+      output: false,
+    },
+  ];
+  const synthesisPrefix = [
+    "Synthesize the independent analyses below into one definitive answer.",
+    `Fusion instruction: ${instruction}`,
+    "Discard unsupported claims instead of averaging them. Preserve useful divergence with attribution.",
+    "End with a concise 'Consensus and Divergence' section.",
+    "",
+    `Original request: ${task}`,
+    "",
+    "ARCHITECT ANALYSIS",
+    "",
+  ].join("\n");
+  const analystSeparator = "\n\nANALYST ANALYSIS\n";
+
+  return workflowRequest([
+    `const analyses = await runs.all(${JSON.stringify(analyses)});`,
+    "const synthesis = await runs.run(\"synthesis\", {",
+    `  agent: ${JSON.stringify(AGENTS.architect)},`,
+    `  label: ${JSON.stringify("Fuse analyses")},`,
+    `  model: ${JSON.stringify(modelSelector(config.architect))},`,
+    "  output: false,",
+    `  task: ${JSON.stringify(synthesisPrefix)} + analyses[0].output + ${JSON.stringify(analystSeparator)} + analyses[1].output`,
+    "});",
+    "return synthesis.output;",
+  ].join("\n"), true);
 }
 
-export function buildFusionBuildWorkflow(config: WorkflowConfig, task: string): ChainWorkflow {
-  return {
-    chain: [
-      {
-        agent: AGENTS.architect,
-        label: "Architect plan",
-        as: "plan",
-        model: config.architectModel,
-        output: false,
-        task: [
-          "Produce a grounded implementation plan for the request below.",
-          "Inspect relevant files, identify acceptance checks, and remain read-only.",
-          "Prefer the smallest correct implementation and call out unresolved user decisions.",
-          "",
-          "REQUEST",
-          task,
-        ].join("\n"),
-      },
-      {
-        agent: AGENTS.builder,
-        label: "Builder implementation",
-        as: "build",
-        model: config.builderModel,
-        output: false,
-        acceptance: "checked",
-        agentContract: { version: 1 },
-        task: [
-          "Implement the request using the architect plan as guidance.",
-          "You are the only mutation-capable agent in this workflow.",
-          "Validate the result with the project's existing tests, type checks, builds, or focused checks.",
-          "Return changed files, commands with exit codes, residual risks, and anything left undone.",
-          "",
-          `REQUEST: ${task}`,
-          "",
-          "ARCHITECT PLAN",
-          "{outputs.plan}",
-        ].join("\n"),
-      },
-      {
-        agent: AGENTS.architect,
-        label: "Architect review",
-        model: config.architectModel,
-        output: false,
-        task: [
-          "Review the completed implementation against the request and architect plan.",
-          "Inspect the actual files. Do not modify anything.",
-          "Report blockers first, then fixes worth doing now, then optional improvements.",
-          "If no fixes are needed, state that plainly and summarize the validation evidence.",
-          "",
-          `REQUEST: ${task}`,
-          "",
-          "ARCHITECT PLAN",
-          "{outputs.plan}",
-          "",
-          "BUILDER HANDOFF",
-          "{outputs.build}",
-        ].join("\n"),
-      },
-    ],
-    context: "fresh",
-    async: true,
-    artifacts: true,
-    agentContract: { version: 1 },
-  };
+export function buildFusionBuildWorkflow(config: WorkflowConfig, task: string): WorkflowRequest {
+  const planTask = [
+    "Produce a grounded implementation plan for the request below.",
+    "Inspect relevant files, identify acceptance checks, and remain read-only.",
+    "Prefer the smallest correct implementation and call out unresolved user decisions.",
+    "",
+    "REQUEST",
+    task,
+  ].join("\n");
+  const buildTaskPrefix = [
+    "Implement the request using the architect plan as guidance.",
+    "You are the only mutation-capable agent in this workflow.",
+    "Validate the result with the project's existing tests, type checks, builds, or focused checks.",
+    "Return changed files, commands with exit codes, residual risks, and anything left undone.",
+    "",
+    `REQUEST: ${task}`,
+    "",
+    "ARCHITECT PLAN",
+    "",
+  ].join("\n");
+  const reviewTaskPrefix = [
+    "Review the completed implementation against the request and architect plan.",
+    "Inspect the actual files. Do not modify anything.",
+    "Report blockers first, then fixes worth doing now, then optional improvements.",
+    "If no fixes are needed, state that plainly and summarize the validation evidence.",
+    "",
+    `REQUEST: ${task}`,
+    "",
+    "ARCHITECT PLAN",
+    "",
+  ].join("\n");
+  const buildSeparator = "\n\nBUILDER HANDOFF\n";
+
+  return workflowRequest([
+    "const plan = await runs.run(\"plan\", {",
+    `  agent: ${JSON.stringify(AGENTS.architect)},`,
+    `  label: ${JSON.stringify("Architect plan")},`,
+    `  model: ${JSON.stringify(modelSelector(config.architect))},`,
+    "  output: false,",
+    `  task: ${JSON.stringify(planTask)}`,
+    "});",
+    "const build = await runs.run(\"build\", {",
+    `  agent: ${JSON.stringify(AGENTS.builder)},`,
+    `  label: ${JSON.stringify("Builder implementation")},`,
+    `  model: ${JSON.stringify(modelSelector(config.builder))},`,
+    "  output: false,",
+    `  acceptance: ${JSON.stringify("checked")},`,
+    "  agentContract: { version: 1 },",
+    `  task: ${JSON.stringify(buildTaskPrefix)} + plan.output`,
+    "});",
+    "const review = await runs.run(\"review\", {",
+    `  agent: ${JSON.stringify(AGENTS.analyst)},`,
+    `  label: ${JSON.stringify("Analyst review")},`,
+    `  model: ${JSON.stringify(modelSelector(config.analyst))},`,
+    "  output: false,",
+    `  task: ${JSON.stringify(reviewTaskPrefix)} + plan.output + ${JSON.stringify(buildSeparator)} + build.output`,
+    "});",
+    "return review.output;",
+  ].join("\n"), true);
 }
